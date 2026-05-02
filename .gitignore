@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+.env.production
+node_modules/
+.n8n/
+data/*.json
+meta_ads_agent_pending/
+*.zip
+.DS_Store

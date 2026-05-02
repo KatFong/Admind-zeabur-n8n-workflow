@@ -1,0 +1,356 @@
+{
+  "name": "Meta Ads Agent - Daily MCP Analysis + Telegram Approval",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-daily-analysis",
+      "name": "Daily Schedule 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -920,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "ad_account_id",
+              "value": "act_REPLACE_WITH_AD_ACCOUNT_ID"
+            },
+            {
+              "name": "telegram_chat_id",
+              "value": "REPLACE_WITH_TELEGRAM_CHAT_ID"
+            },
+            {
+              "name": "date_preset",
+              "value": "last_7d"
+            },
+            {
+              "name": "agent_script_dir",
+              "value": "/opt/meta_ads_n8n_agent/scripts"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-agent-config",
+      "name": "Set Agent Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        -220
+      ],
+      "notes": "Edit ad_account_id, telegram_chat_id, and script path after importing."
+    },
+    {
+      "parameters": {
+        "command": "=python3 {{$json.agent_script_dir}}/run_daily_analysis.py --ad-account-id {{$json.ad_account_id}} --date-preset {{$json.date_preset}}"
+      },
+      "id": "run-meta-mcp-ai-analysis",
+      "name": "Run Meta MCP + AI Analysis",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -220
+      ],
+      "notes": "Requires self-hosted n8n with manus-mcp-cli available and OpenAI env vars configured."
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.stdout || $json.data || '';\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  const match = raw.match(/\\{[\\s\\S]*\\}/);\n  if (!match) throw new Error('No JSON returned from analysis script: ' + raw);\n  parsed = JSON.parse(match[0]);\n}\nif (!parsed.ok) {\n  throw new Error(parsed.error || 'Analysis failed');\n}\nreturn [{ json: parsed }];"
+      },
+      "id": "parse-analysis-json",
+      "name": "Parse Analysis JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Set Agent Config').item.json.telegram_chat_id, text: 'Meta Ads Agent 每日診斷\\n\\nRun ID: ' + $json.run_id + '\\n\\n' + ($json.telegram_summary || $json.analysis.summary || '已產生建議。') + '\\n\\n請選擇是否批准執行。', reply_markup: { inline_keyboard: [[ { text: 'Approve', callback_data: 'approve:' + $json.run_id }, { text: 'Reject', callback_data: 'reject:' + $json.run_id } ], [ { text: 'Details', callback_data: 'details:' + $json.run_id } ]] } }) }}",
+        "options": {}
+      },
+      "id": "send-telegram-approval",
+      "name": "Send Telegram Approval Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        40,
+        -220
+      ],
+      "notes": "Requires TELEGRAM_BOT_TOKEN environment variable."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-meta-ads-agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "telegram-callback-webhook",
+      "name": "Telegram Callback Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -920,
+        180
+      ],
+      "webhookId": "telegram-meta-ads-agent"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || $json;\nconst callback = body.callback_query;\nif (!callback || !callback.data) {\n  return [{ json: { ok: false, ignored: true, reason: 'No callback_query.data' } }];\n}\nconst [decision, run_id] = callback.data.split(':');\nif (!['approve', 'reject', 'details'].includes(decision) || !run_id) {\n  throw new Error('Invalid callback data: ' + callback.data);\n}\nreturn [{ json: { ok: true, decision, run_id, callback_query_id: callback.id, chat_id: callback.message.chat.id, message_id: callback.message.message_id, approved_by: callback.from ? String(callback.from.id) : 'telegram' } }];"
+      },
+      "id": "parse-telegram-callback",
+      "name": "Parse Telegram Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -680,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "agent_script_dir",
+              "value": "/opt/meta_ads_n8n_agent/scripts"
+            }
+          ]
+        },
+        "options": {
+          "dotNotation": false
+        }
+      },
+      "id": "set-callback-config",
+      "name": "Set Callback Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=python3 {{$json.agent_script_dir}}/execute_approved_action.py --run-id {{$('Parse Telegram Callback').item.json.run_id}} --decision {{$('Parse Telegram Callback').item.json.decision}} --approved-by {{$('Parse Telegram Callback').item.json.approved_by}}"
+      },
+      "id": "execute-approved-action",
+      "name": "Execute Approved Action",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        180
+      ],
+      "notes": "Default execution is dry-run unless META_EXECUTION_MODE=graph_api is configured."
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.stdout || '';\nlet result;\ntry { result = JSON.parse(raw); } catch (e) { const match = raw.match(/\\{[\\s\\S]*\\}/); result = match ? JSON.parse(match[0]) : { ok: false, error: raw }; }\nconst cb = $('Parse Telegram Callback').item.json;\nreturn [{ json: { ...result, callback_query_id: cb.callback_query_id, chat_id: cb.chat_id, message_id: cb.message_id, decision: cb.decision, run_id: cb.run_id } }];"
+      },
+      "id": "parse-execution-result",
+      "name": "Parse Execution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/answerCallbackQuery",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ callback_query_id: $json.callback_query_id, text: $json.ok ? '已收到：' + $json.decision : '處理失敗', show_alert: false }) }}",
+        "options": {}
+      },
+      "id": "answer-callback-query",
+      "name": "Answer Callback Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.chat_id, text: 'Meta Ads Agent 回覆\\n\\nRun ID: ' + $json.run_id + '\\nDecision: ' + $json.decision + '\\nResult: ' + ($json.ok ? 'OK' : 'Failed') + '\\nMode: ' + ($json.mode || 'details/reject') + '\\n' + ($json.message || $json.error || '') }) }}",
+        "options": {}
+      },
+      "id": "send-execution-status",
+      "name": "Send Execution Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true } }}",
+        "options": {}
+      },
+      "id": "respond-to-telegram",
+      "name": "Respond to Telegram",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        180
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Schedule 09:00": {
+      "main": [
+        [
+          {
+            "node": "Set Agent Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Agent Config": {
+      "main": [
+        [
+          {
+            "node": "Run Meta MCP + AI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Meta MCP + AI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis JSON": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Approval Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Callback Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Telegram Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Telegram Callback": {
+      "main": [
+        [
+          {
+            "node": "Set Callback Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Callback Config": {
+      "main": [
+        [
+          {
+            "node": "Execute Approved Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Approved Action": {
+      "main": [
+        [
+          {
+            "node": "Parse Execution Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Execution Result": {
+      "main": [
+        [
+          {
+            "node": "Answer Callback Query",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Execution Status",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "template-meta-ads-agent-v1",
+  "triggerCount": 2,
+  "tags": []
+}
